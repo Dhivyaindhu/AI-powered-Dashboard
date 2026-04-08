@@ -24,16 +24,27 @@ st.set_page_config(
 # ==========================================================
 # PATHS
 # ==========================================================
-# ==========================================================
-# PATHS
-# ==========================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# Since your app.py is inside /app folder
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
 
 PROCESSED_DIR = os.path.join(PROJECT_ROOT, "processed_data_backup")
 MODEL_DIR = os.path.join(PROJECT_ROOT, "models_backup")
+
+
+# ==========================================================
+# STARTUP CHECK
+# ==========================================================
+def check_required_folders():
+    missing = []
+
+    if not os.path.exists(PROCESSED_DIR):
+        missing.append(f"Processed data folder not found: {PROCESSED_DIR}")
+
+    if not os.path.exists(MODEL_DIR):
+        missing.append(f"Model folder not found: {MODEL_DIR}")
+
+    return missing
+
 
 # ==========================================================
 # LOCATION CONFIG
@@ -109,20 +120,36 @@ def load_asset_data(filepath: str) -> pd.DataFrame:
     if not os.path.exists(path):
         return pd.DataFrame()
 
-    df = pd.read_csv(path)
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return pd.DataFrame()
+
+    if df.empty:
+        return pd.DataFrame()
+
+    # Remove junk columns
+    df = df.loc[:, ~df.columns.astype(str).str.contains("^Unnamed")]
 
     if "Date" in df.columns:
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df = df.set_index("Date")
     else:
-        df.index = pd.to_datetime(df.index, errors="coerce")
+        try:
+            df.index = pd.to_datetime(df.index, errors="coerce")
+        except Exception:
+            return pd.DataFrame()
 
     df = df[~df.index.isna()].copy()
     df.sort_index(inplace=True)
 
-    # Force numeric columns where possible
+    # Convert all columns safely
     for col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="ignore")
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Keep only rows with Close if available
+    if "Close" in df.columns:
+        df = df.dropna(subset=["Close"])
 
     return df
 
@@ -143,7 +170,7 @@ def load_model(model_path: str):
 def rebuild_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    if "Close" not in df.columns:
+    if df.empty or "Close" not in df.columns:
         return df
 
     # Lags
@@ -201,10 +228,12 @@ def get_xgb_forecast(asset_key: str, df: pd.DataFrame, n_days: int = 180) -> pd.
     model_path = os.path.join(MODEL_DIR, "xgboost", f"{asset_key}_xgb_reg.pkl")
     bundle = load_model(model_path)
 
-    if bundle is None or df.empty:
+    if df.empty or "Close" not in df.columns:
         return pd.DataFrame()
 
-    # Supports both bundle format and raw model
+    if bundle is None:
+        return pd.DataFrame()
+
     if isinstance(bundle, dict):
         model = bundle.get("model", None)
         feat_cols = bundle.get("feature_cols", [])
@@ -216,6 +245,9 @@ def get_xgb_forecast(asset_key: str, df: pd.DataFrame, n_days: int = 180) -> pd.
         return pd.DataFrame()
 
     df_copy = rebuild_features(df.copy())
+    if df_copy.empty:
+        return pd.DataFrame()
+
     last_date = df_copy.index.max()
     results = []
 
@@ -225,9 +257,7 @@ def get_xgb_forecast(asset_key: str, df: pd.DataFrame, n_days: int = 180) -> pd.
             break
 
         row = df_copy.iloc[-1:][available_feat].copy()
-
-        # Fill any NaNs in features
-        row = row.fillna(method="ffill", axis=1).fillna(0)
+        row = row.ffill(axis=1).fillna(0)
 
         try:
             next_price = float(model.predict(row)[0])
@@ -237,7 +267,6 @@ def get_xgb_forecast(asset_key: str, df: pd.DataFrame, n_days: int = 180) -> pd.
         next_date = last_date + pd.Timedelta(days=i + 1)
         results.append({"Date": next_date, "forecast": next_price})
 
-        # Add new synthetic row
         new_row = df_copy.iloc[-1].copy()
         new_row["Close"] = next_price
         new_row.name = next_date
@@ -250,7 +279,6 @@ def get_xgb_forecast(asset_key: str, df: pd.DataFrame, n_days: int = 180) -> pd.
 
     forecast_df = pd.DataFrame(results).set_index("Date")
 
-    # Approx pseudo confidence interval
     recent_vol = df["Close"].pct_change().dropna().tail(60).std()
     if pd.notna(recent_vol):
         forecast_df["lower_ci"] = forecast_df["forecast"] * (1 - 1.96 * recent_vol)
@@ -263,7 +291,7 @@ def get_direction_prediction(asset_key: str, df: pd.DataFrame) -> dict:
     model_path = os.path.join(MODEL_DIR, "xgboost", f"{asset_key}_xgb_cls.pkl")
     bundle = load_model(model_path)
 
-    if bundle is None or df.empty:
+    if bundle is None or df.empty or "Close" not in df.columns:
         return {"direction": "Unknown", "confidence": 0}
 
     if isinstance(bundle, dict):
@@ -284,7 +312,7 @@ def get_direction_prediction(asset_key: str, df: pd.DataFrame) -> dict:
         return {"direction": "Unknown", "confidence": 0}
 
     last_row = df_feat.iloc[-1:][available].copy()
-    last_row = last_row.fillna(method="ffill", axis=1).fillna(0)
+    last_row = last_row.ffill(axis=1).fillna(0)
 
     try:
         pred = model.predict(last_row)[0]
@@ -318,7 +346,7 @@ def compute_recommendation(budget: float, target_date: date, assets_data: dict, 
         forecast = data.get("forecast_df", pd.DataFrame())
         direction_info = data.get("direction", {})
 
-        if df.empty or forecast.empty:
+        if df.empty or forecast.empty or "Close" not in df.columns:
             continue
 
         current_price = float(df["Close"].dropna().iloc[-1])
@@ -330,17 +358,14 @@ def compute_recommendation(budget: float, target_date: date, assets_data: dict, 
         except Exception:
             future_price = current_price
 
-        expected_return_pct = ((future_price - current_price) / current_price) * 100
+        expected_return_pct = ((future_price - current_price) / current_price) * 100 if current_price > 0 else 0
         units_can_buy = budget / current_price if current_price > 0 else 0
 
-        # Affordability score
         affordability_score = min(1.0, units_can_buy)
 
-        # Volatility score
         vol = float(df["volatility_30d"].dropna().iloc[-1]) if "volatility_30d" in df.columns and not df["volatility_30d"].dropna().empty else 0.3
         vol_score = max(0, 1 - min(vol * 10, 1))
 
-        # RSI trend
         rsi = float(df["RSI"].dropna().iloc[-1]) if "RSI" in df.columns and not df["RSI"].dropna().empty else 50
         if rsi < 30:
             trend_score = 0.8
@@ -349,7 +374,6 @@ def compute_recommendation(budget: float, target_date: date, assets_data: dict, 
         else:
             trend_score = 1.0
 
-        # Classifier direction
         direction = direction_info.get("direction", "Stable")
         confidence = direction_info.get("confidence", 50)
 
@@ -360,7 +384,6 @@ def compute_recommendation(budget: float, target_date: date, assets_data: dict, 
         else:
             cls_score = 0.2
 
-        # Return score
         return_score = max(0, min(1, (expected_return_pct + 20) / 40))
 
         composite = (
@@ -396,7 +419,6 @@ def compute_recommendation(budget: float, target_date: date, assets_data: dict, 
     best_asset = max(scores, key=scores.get)
     best = summaries[best_asset]
 
-    # Allocation suggestion
     total_score = sum(scores.values())
     allocation = {a: (s / total_score) * budget for a, s in scores.items()} if total_score > 0 else {}
 
@@ -432,12 +454,13 @@ def compute_recommendation(budget: float, target_date: date, assets_data: dict, 
 def plot_historical_with_forecast(df, forecast_df, asset_name, color, currency, unit):
     fig = go.Figure()
 
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df["Close"],
-        name=f"{asset_name} Historical",
-        line=dict(color=color, width=2),
-        hovertemplate=f"%{{x|%d %b %Y}}<br>{currency}%{{y:,.2f}}<extra></extra>",
-    ))
+    if not df.empty and "Close" in df.columns:
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df["Close"],
+            name=f"{asset_name} Historical",
+            line=dict(color=color, width=2),
+            hovertemplate=f"%{{x|%d %b %Y}}<br>{currency}%{{y:,.2f}}<extra></extra>",
+        ))
 
     if not forecast_df.empty:
         if "upper_ci" in forecast_df.columns and "lower_ci" in forecast_df.columns:
@@ -529,7 +552,8 @@ def plot_rsi_macd(df, asset_name):
         subplot_titles=[f"{asset_name} Close", "RSI (14)", "MACD"],
     )
 
-    fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="Close"), row=1, col=1)
+    if not df.empty and "Close" in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="Close"), row=1, col=1)
 
     if "RSI" in df.columns:
         fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI"), row=2, col=1)
@@ -643,6 +667,16 @@ def render_sidebar():
 # MAIN APP
 # ==========================================================
 def main():
+    # -------------------------------
+    # Startup validation
+    # -------------------------------
+    issues = check_required_folders()
+    if issues:
+        st.error("⚠ Project folders are missing:")
+        for issue in issues:
+            st.write(f"- {issue}")
+        st.stop()
+
     params = render_sidebar()
     cfg = params["config"]
 
@@ -657,22 +691,32 @@ def main():
     # Load Data
     # -------------------------------
     assets_data = {}
+    missing_files = []
+
     for asset_name in params["preferred_assets"]:
         asset_cfg = cfg["assets"].get(asset_name, {})
         fname = asset_cfg.get("file", "")
         df = load_asset_data(fname)
 
-        if not df.empty:
-            df = rebuild_features(df)
-            assets_data[asset_name] = {
-                "df": df,
-                "unit": asset_cfg.get("unit", ""),
-                "color": asset_cfg.get("color", "#888"),
-            }
+        if df.empty:
+            missing_files.append(fname)
+            continue
+
+        df = rebuild_features(df)
+        assets_data[asset_name] = {
+            "df": df,
+            "unit": asset_cfg.get("unit", ""),
+            "color": asset_cfg.get("color", "#888"),
+        }
+
+    if missing_files:
+        with st.expander("⚠ Missing / Empty Data Files", expanded=False):
+            for f in missing_files:
+                st.write(f"- {f}")
 
     if not assets_data:
-        st.error("⚠ No data found. Please ensure your processed CSV files are inside data/processed/")
-        return
+        st.error("⚠ No usable data found. Please ensure your processed CSV files are inside processed_data_backup/")
+        st.stop()
 
     # -------------------------------
     # Model Status
@@ -696,7 +740,6 @@ def main():
     with st.spinner("Running forecasts..."):
         for asset_name, data in assets_data.items():
             model_key = get_model_key(asset_name, params["location"])
-
             forecast = get_xgb_forecast(model_key, data["df"], min(days_ahead, 365))
 
             if forecast.empty:
@@ -779,12 +822,12 @@ def main():
             ann_return = 0
 
         stats = {
-            "Min": f"{params['currency']}{close.min():,.2f}",
-            "Max": f"{params['currency']}{close.max():,.2f}",
-            "Mean": f"{params['currency']}{close.mean():,.2f}",
-            "Current": f"{params['currency']}{close.iloc[-1]:,.2f}",
+            "Min": f"{params['currency']}{close.min():,.2f}" if not close.empty else "—",
+            "Max": f"{params['currency']}{close.max():,.2f}" if not close.empty else "—",
+            "Mean": f"{params['currency']}{close.mean():,.2f}" if not close.empty else "—",
+            "Current": f"{params['currency']}{close.iloc[-1]:,.2f}" if not close.empty else "—",
             "Annualised Return": f"{ann_return:.2f}%",
-            "30d Volatility": f"{df_filtered['volatility_30d'].dropna().mean() * 100:.2f}%" if "volatility_30d" in df_filtered.columns else "—",
+            "30d Volatility": f"{df_filtered['volatility_30d'].dropna().mean() * 100:.2f}%" if "volatility_30d" in df_filtered.columns and not df_filtered['volatility_30d'].dropna().empty else "—",
         }
         st.dataframe(pd.DataFrame([stats]), use_container_width=True, hide_index=True)
 
@@ -821,7 +864,7 @@ def main():
                         "Forecast Price": f"{params['currency']}{p:,.2f}",
                         "Expected Change": f"{(p - current) / current * 100:+.1f}%"
                     }
-                except:
+                except Exception:
                     pass
 
             if milestones:
@@ -854,10 +897,10 @@ def main():
                 try:
                     nearest_idx = forecast_df.index.get_indexer([target_ts], method="nearest")[0]
                     future = float(forecast_df.iloc[nearest_idx]["forecast"])
-                except:
+                except Exception:
                     future = current
 
-                ret_pct = ((future - current) / current) * 100
+                ret_pct = ((future - current) / current) * 100 if current > 0 else 0
                 units = params["budget"] / current if current > 0 else 0
                 final_val = units * future
                 years = max(days_ahead / 365, 0.01)
@@ -879,11 +922,17 @@ def main():
 
             ret_df = pd.DataFrame({
                 "Asset": compare_df["Asset"],
-                "Expected Return (%)": compare_df["Expected Return"].str.replace("%", "").str.replace("+", "").astype(float)
+                "Expected Return (%)": compare_df["Expected Return"].str.replace("%", "", regex=False).str.replace("+", "", regex=False).astype(float)
             })
 
-            fig = px.bar(ret_df, x="Asset", y="Expected Return (%)", color="Expected Return (%)",
-                         color_continuous_scale="RdYlGn", title="Expected Return Comparison")
+            fig = px.bar(
+                ret_df,
+                x="Asset",
+                y="Expected Return (%)",
+                color="Expected Return (%)",
+                color_continuous_scale="RdYlGn",
+                title="Expected Return Comparison"
+            )
             fig.add_hline(y=0, line_dash="dash", line_color="gray")
             st.plotly_chart(fig, use_container_width=True)
 
