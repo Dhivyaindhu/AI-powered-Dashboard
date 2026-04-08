@@ -24,8 +24,16 @@ st.set_page_config(
 # ==========================================================
 # PATHS
 # ==========================================================
-PROCESSED_DIR = "data/processed"
-MODEL_DIR = "models"
+# ==========================================================
+# PATHS
+# ==========================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Since your app.py is inside /app folder
+PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
+
+PROCESSED_DIR = os.path.join(PROJECT_ROOT, "processed_data_backup")
+MODEL_DIR = os.path.join(PROJECT_ROOT, "models_backup")
 
 # ==========================================================
 # LOCATION CONFIG
