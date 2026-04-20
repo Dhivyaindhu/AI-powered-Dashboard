@@ -15,10 +15,13 @@ warnings.filterwarnings("ignore")
 # ==========================================================
 # IMPORT COMPARISON ENGINE
 # ==========================================================
-# Add project root to path so the engine module can be found
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-if BASE_DIR not in sys.path:
-    sys.path.insert(0, BASE_DIR)
+BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
+PARENT_DIR  = os.path.abspath(os.path.join(BASE_DIR, ".."))
+
+# Search both the app/ folder itself AND the project root
+for _search_path in [BASE_DIR, PARENT_DIR]:
+    if _search_path not in sys.path:
+        sys.path.insert(0, _search_path)
 
 try:
     from comparison_engine import (
@@ -32,7 +35,7 @@ try:
 except ImportError:
     ENGINE_AVAILABLE = False
     st.warning(
-        "⚠ comparison_engine.py not found next to app.py. "
+        "⚠ comparison_engine.py not found. "
         "Recommendation tab will fall back to the built-in scorer."
     )
 
@@ -49,7 +52,9 @@ st.set_page_config(
 # ==========================================================
 # PATHS
 # ==========================================================
-PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
+# BASE_DIR  = .../AI-powered-Dashboard/app/
+# PARENT_DIR = .../AI-powered-Dashboard/  ← project root
+PROJECT_ROOT  = PARENT_DIR
 PROCESSED_DIR = os.path.join(PROJECT_ROOT, "processed_data_backup")
 MODEL_DIR     = os.path.join(PROJECT_ROOT, "models_backup")
 
