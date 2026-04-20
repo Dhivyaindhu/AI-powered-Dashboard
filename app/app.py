@@ -833,11 +833,12 @@ def main():
         st.plotly_chart(
             plot_comparison_normalised({a: d["df"] for a, d in assets_data.items()}, period),
             use_container_width=True,
+            key="overview_normalised",
         )
 
         # Engine scores overview bar
         if engine_results:
-            st.plotly_chart(plot_engine_scores(engine_results, params["currency"]), use_container_width=True)
+            st.plotly_chart(plot_engine_scores(engine_results, params["currency"]), use_container_width=True, key="overview_engine_scores")
 
     # ══════════════════════════════════════════════════════
     # TAB 2 — HISTORICAL
@@ -856,7 +857,7 @@ def main():
             hist_end = st.date_input("To", value=min(date.today(), df.index.max().date()), key="hist_to")
 
         df_filtered = df[(df.index >= pd.Timestamp(hist_start)) & (df.index <= pd.Timestamp(hist_end))]
-        st.plotly_chart(plot_rsi_macd(df_filtered, selected_asset), use_container_width=True)
+        st.plotly_chart(plot_rsi_macd(df_filtered, selected_asset), use_container_width=True, key="hist_rsi_macd")
 
         close = df_filtered["Close"].dropna()
         ann_return = ((close.iloc[-1] / close.iloc[0]) ** (252 / len(close)) - 1) * 100 if len(close) > 1 else 0
@@ -900,6 +901,7 @@ def main():
                 data["color"], params["currency"], data["unit"],
             ),
             use_container_width=True,
+            key="forecast_chart",
         )
 
         if not forecast_df.empty:
@@ -962,9 +964,9 @@ def main():
 
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.plotly_chart(plot_return_bar(filtered_results), use_container_width=True)
+                    st.plotly_chart(plot_return_bar(filtered_results), use_container_width=True, key="compare_return_bar")
                 with col2:
-                    st.plotly_chart(plot_engine_scores(filtered_results, params["currency"]), use_container_width=True)
+                    st.plotly_chart(plot_engine_scores(filtered_results, params["currency"]), use_container_width=True, key="compare_engine_scores")
 
                 # ── Budget Scenario Chart ─────────────────
                 st.subheader("📊 What If? — Budget Scenario Analysis")
@@ -990,6 +992,7 @@ def main():
                             st.plotly_chart(
                                 plot_budget_scenarios(scenario_df, params["currency"]),
                                 use_container_width=True,
+                                key="compare_scenario_chart",
                             )
 
             else:
@@ -1040,7 +1043,7 @@ def main():
                     title="Expected Return Comparison",
                 )
                 fig.add_hline(y=0, line_dash="dash", line_color="gray")
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key="compare_fallback_bar")
 
     # ══════════════════════════════════════════════════════
     # TAB 5 — RECOMMENDATION
@@ -1088,18 +1091,20 @@ def main():
                 st.plotly_chart(
                     plot_projected_value_bar(engine_reco["results"], params["budget"], params["currency"]),
                     use_container_width=True,
+                    key="reco_projected_value_bar",
                 )
             with col2:
                 st.plotly_chart(
                     plot_allocation_pie(engine_reco["results"], params["budget"]),
                     use_container_width=True,
+                    key="reco_allocation_pie",
                 )
 
             col3, col4 = st.columns(2)
             with col3:
-                st.plotly_chart(plot_return_bar(engine_reco["results"]), use_container_width=True)
+                st.plotly_chart(plot_return_bar(engine_reco["results"]), use_container_width=True, key="reco_return_bar")
             with col4:
-                st.plotly_chart(plot_engine_scores(engine_reco["results"], params["currency"]), use_container_width=True)
+                st.plotly_chart(plot_engine_scores(engine_reco["results"], params["currency"]), use_container_width=True, key="reco_engine_scores")
 
             # ── Per-asset reasoning ───────────────────────
             st.subheader("Per-Asset Signal & Reasoning")
